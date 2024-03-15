@@ -1,25 +1,25 @@
 [package]
-name = "gantt_chart"
-version = "3.0.1"
+name = "gantt"
+version = "1.0.0"
 edition = "2021"
-authors = ["John Lyon-Smith <john@lyon-smith.org>"]
+authors = ["John Lyon-Smith <john@lyon-smith.org>", "Veniamin Albaev <albenik@gmail.com>"]
 readme = "README.md"
 description = "A tool for generating Gantt charts"
-repository = "https://github.com/jlyonsmith/gantt_chart"
-keywords = ["gantt", "chart", "project", "graphics", "skia"]
+repository = "https://github.com/albenik/gantt_chart_rs"
+keywords = ["gantt", "chart", "project", "graphics", "svg"]
 categories = ["command-line-utilities"]
 license = "Unlicense"
 
 [dependencies]
-chrono = { version = "0.4.22", features = ["serde"] }
-clap = { version = "4.0.7", features = ["derive"] }
-colored = "2.0.0"
-easy-error = "1.0.0"
-hypermelon = "0.4.0"
-json5 = "0.4.1"
-rand = "0.8.5"
-serde = { version = "1.0.145", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+easy-error = "1"
+json5 = "0.4"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+svg = "0.16"
 
 [[bin]]
-name = "gantt-chart"
-path = "src/bin/gantt_chart.rs"
+name = "gantt"
+path = "src/main.rs"

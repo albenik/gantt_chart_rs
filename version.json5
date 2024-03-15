@@ -19,7 +19,9 @@
   targets: [
     {
       description: "Cargo Package",
-      files: ["Cargo.toml"],
+      files: [
+        "Cargo.toml"
+      ],
       updates: [
         {
           search: '^(?P<begin>version\\s*=\\s*")\\d+\\.\\d+\\.\\d+(?P<end>"\\s*)$',
@@ -29,12 +31,16 @@
     },
     {
       description: "Git Tag Name",
-      files: ["scratch/version.tag.txt"],
+      files: [
+        "scratch/version.tag.txt"
+      ],
       write: 'str::from(major) + "." + str::from(minor) + "." + str::from(patch)',
     },
     {
       description: "Git Tag Description",
-      files: ["scratch/version.desc.txt"],
+      files: [
+        "scratch/version.desc.txt"
+      ],
       write: '"Version " + str::from(major) + "." + str::from(minor) + "." + str::from(patch) + "+" + str::from(build) + "." + str::from(revision)',
     },
   ],

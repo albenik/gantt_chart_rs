@@ -1,6 +1,10 @@
 {
   title: "Plant a Garden",
-  resources: ["Jane", "Mary", "Anne"],
+  resources: [
+    "Jane",
+    "Mary",
+    "Anne"
+  ],
   markedDate: "2022-8-15",
   items: [
     {

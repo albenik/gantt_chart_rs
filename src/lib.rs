@@ -1,21 +1,52 @@
-/// Generate a Gantt chart
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
-use clap::Parser;
+mod macros;
+mod render;
+
 use core::fmt::Arguments;
-use easy_error::{self, bail, ResultExt};
-use hypermelon::{attr::PathCommand::*, build, prelude::*};
-use rand::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fs::File,
-    io::{self, Read, Write},
+    io,
+    io::{
+        Read,
+        Write,
+    },
     path::PathBuf,
 };
 
-mod log_macros;
+use chrono::{
+    Datelike,
+    Duration,
+    NaiveDate,
+    Weekday,
+};
+use clap::Parser;
+use easy_error::{
+    bail,
+    ResultExt,
+};
+use rand::Rng;
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use svg::{
+    node::{
+        element::{
+            path::Data,
+            Group,
+            Line,
+            Path,
+            Rectangle,
+            Style,
+            Text,
+        },
+        Blob,
+    },
+    Document,
+    Node,
+};
 
-static GOLDEN_RATIO_CONJUGATE: f32 = 0.618033988749895;
+static GOLDEN_RATIO_CONJUGATE: f32 = 0.618034; // 0.618033988749895
 static MONTH_NAMES: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
@@ -36,12 +67,12 @@ struct Cli {
     title_width: f32,
 
     /// The maximum width of each month
-    #[arg(value_name = "WIDTH", short, long, default_value_t = 80.0)]
+    #[arg(value_name = "WIDTH", short, long, default_value_t = 200.0)]
     max_month_width: f32,
 
     /// Add a resource table at the bottom of the graph
     #[arg(short, long, default_value_t = false)]
-    add_resource_table: bool,
+    legend: bool,
 }
 
 impl Cli {
@@ -70,9 +101,9 @@ impl Cli {
 }
 
 pub trait GanttChartLog {
-    fn output(self: &Self, args: Arguments);
-    fn warning(self: &Self, args: Arguments);
-    fn error(self: &Self, args: Arguments);
+    fn output(&self, args: Arguments);
+    fn warning(&self, args: Arguments);
+    fn error(&self, args: Arguments);
 }
 
 pub struct GanttChartTool<'a> {
@@ -157,7 +188,7 @@ impl<'a> GanttChartTool<'a> {
     }
 
     pub fn run(
-        self: &mut Self,
+        &mut self,
         args: impl IntoIterator<Item = std::ffi::OsString>,
     ) -> Result<(), Box<dyn Error>> {
         let cli = match Cli::try_parse_from(args) {
@@ -171,7 +202,7 @@ impl<'a> GanttChartTool<'a> {
         let chart_data = Self::read_chart_file(cli.get_input()?)?;
         let render_data =
             self.process_chart_data(cli.title_width, cli.max_month_width, &chart_data)?;
-        let output = self.render_chart(cli.add_resource_table, &render_data)?;
+        let output = self.render_chart(cli.legend, &render_data)?;
 
         Self::write_svg_file(cli.get_output()?, &output)?;
         Ok(())
@@ -220,7 +251,7 @@ impl<'a> GanttChartTool<'a> {
     }
 
     fn process_chart_data(
-        self: &Self,
+        &self,
         title_width: f32,
         max_month_width: f32,
         chart_data: &ChartData,
@@ -232,10 +263,10 @@ impl<'a> GanttChartTool<'a> {
             } else {
                 (year, month + 1)
             };
-            let d = NaiveDate::from_ymd(y, m, 1);
+            let d = NaiveDate::from_ymd_opt(y, m, 1).unwrap(); // FIXME unwrap
 
             // ...is preceded by the last day of the original month
-            d.pred().day()
+            d.pred_opt().unwrap().day() // FIXME unwrap
         }
 
         // Fail if only one task
@@ -256,21 +287,24 @@ impl<'a> GanttChartTool<'a> {
                 if item_start_date < start_date {
                     // Move the start if it falls on a weekend
                     start_date = match date.weekday() {
-                        Weekday::Sat => date + Duration::days(2),
-                        Weekday::Sun => date + Duration::days(1),
+                        Weekday::Sat => date + Duration::try_days(2).unwrap(), // FIXME unwrap
+                        Weekday::Sun => date + Duration::try_days(1).unwrap(), // FIXME unwrap
                         _ => date,
                     };
                 }
             } else if i == 0 {
-                return Err(From::from(format!("First item must contain a start date")));
+                return Err(From::from(
+                    "First item must contain a start date".to_string(),
+                ));
             }
 
             // Skip the weekends and update a shadow list of the _real_ durations
             if let Some(item_days) = item.duration {
-                let duration = match (date + Duration::days(item_days)).weekday() {
-                    Weekday::Sat => Duration::days(item_days + 2),
-                    Weekday::Sun => Duration::days(item_days + 1),
-                    _ => Duration::days(item_days),
+                // FIXME unwrap
+                let duration = match (date + Duration::try_days(item_days).unwrap()).weekday() {
+                    Weekday::Sat => Duration::try_days(item_days + 2).unwrap(),
+                    Weekday::Sun => Duration::try_days(item_days + 1).unwrap(),
+                    _ => Duration::try_days(item_days).unwrap(),
                 };
 
                 date += duration;
@@ -286,21 +320,22 @@ impl<'a> GanttChartTool<'a> {
 
             if let Some(item_resource_index) = item.resource_index {
                 if item_resource_index >= chart_data.resources.len() {
-                    return Err(From::from(format!("Resource index is out of range")));
+                    return Err(From::from("Resource index is out of range".to_string()));
                 }
             } else if i == 0 {
-                return Err(From::from(format!(
-                    "First item must contain a resource index"
-                )));
+                return Err(From::from(
+                    "First item must contain a resource index".to_string(),
+                ));
             }
         }
 
-        start_date = NaiveDate::from_ymd(start_date.year(), start_date.month(), 1);
-        end_date = NaiveDate::from_ymd(
+        start_date = NaiveDate::from_ymd_opt(start_date.year(), start_date.month(), 1).unwrap(); // FIXME unwrap
+        end_date = NaiveDate::from_ymd_opt(
             end_date.year(),
             end_date.month(),
             num_days_in_month(end_date.year(), end_date.month()),
-        );
+        )
+        .unwrap(); // FIXME unwrap
 
         // Create all the column data
         let mut all_items_width: f32 = 0.0;
@@ -321,11 +356,12 @@ impl<'a> GanttChartTool<'a> {
                 month_name: MONTH_NAMES[date.month() as usize - 1].to_string(),
             });
 
-            date = NaiveDate::from_ymd(
+            date = NaiveDate::from_ymd_opt(
                 date.year() + (if date.month() == 12 { 1 } else { 0 }),
                 date.month() % 12 + 1,
                 1,
-            );
+            )
+            .unwrap(); // FIXME unwrap
         }
 
         date = start_date;
@@ -369,7 +405,7 @@ impl<'a> GanttChartTool<'a> {
 
             if let Some(item_days) = shadow_durations[i] {
                 // Use the shadow duration instead of the actual duration as it accounts for weekends
-                date += Duration::days(item_days);
+                date += Duration::try_days(item_days).unwrap(); // FIXME unwrap
                 length = Some((item_days as f32) / (num_item_days as f32) * all_items_width);
             }
 
@@ -386,28 +422,22 @@ impl<'a> GanttChartTool<'a> {
             });
         }
 
-        let marked_date_offset = if let Some(date) = chart_data.marked_date {
-            // TODO(john): Put this offset calculation in a function
-            Some(
-                title_width
-                    + gutter.left
-                    + ((date - start_date).num_days() as f32) / (num_item_days as f32)
-                        * all_items_width,
-            )
-        } else {
-            None
-        };
+        let marked_date_offset = chart_data.marked_date.map(|date| {
+            title_width
+                + gutter.left
+                + ((date - start_date).num_days() as f32) / (num_item_days as f32) * all_items_width
+        });
 
-        let mut styles = vec![
-            ".outer-lines{stroke-width:3;stroke:#aaaaaa;}".to_owned(),
-            ".inner-lines{stroke-width:2;stroke:#dddddd;}".to_owned(),
-            ".item{font-family:Arial;font-size:12pt;dominant-baseline:middle;}".to_owned(),
-            ".resource{font-family:Arial;font-size:12pt;text-anchor:end;dominant-baseline:middle;}".to_owned(),
-            ".title{font-family:Arial;font-size:18pt;}".to_owned(),
-            ".heading{font-family:Arial;font-size:16pt;dominant-baseline:middle;text-anchor:middle;}".to_owned(),
-            ".task-heading{dominant-baseline:middle;text-anchor:start;}".to_owned(),
-            ".milestone{fill:black;stroke-width:1;stroke:black;}".to_owned(),
-            ".marker{stroke-width:2;stroke:#888888;stroke-dasharray:7;}".to_owned(),
+        let mut styles: Vec<String> = vec_of_strings![
+            ".outer-lines{ stroke-width:3; stroke:#aaaaaa;}",
+            ".inner-lines{ stroke-width:2; stroke:#dddddd;}",
+            ".item{font-family:Arial; font-size:12pt; dominant-baseline:middle;}",
+            ".resource{font-family:Arial; font-size:12pt; text-anchor:end; dominant-baseline:middle;}",
+            ".title{font-family:Arial; font-size:18pt;}",
+            ".heading{font-family:Arial; font-size:16pt; dominant-baseline:middle; text-anchor:middle;}",
+            ".task-heading{dominant-baseline:middle; text-anchor:start;}",
+            ".milestone{fill:black;stroke-width:1;stroke:black;}",
+            ".marker{stroke-width:2; stroke:#888888; stroke-dasharray:7;}"
         ];
 
         // Generate random resource colors based on https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
@@ -418,12 +448,10 @@ impl<'a> GanttChartTool<'a> {
             let rgb = GanttChartTool::hsv_to_rgb(h, 0.5, 0.5);
 
             styles.push(format!(
-                ".resource-{}-closed{{fill:#{1:06x};stroke-width:1;stroke:#{1:06x};}}",
-                i, rgb,
+                ".resource-{i}-closed{{stroke-width:1; stroke:#{rgb:06x}; fill:#{rgb:06x};}}"
             ));
             styles.push(format!(
-                ".resource-{}-open{{fill:none;stroke-width:2;stroke:#{1:06x};}}",
-                i, rgb,
+                ".resource-{i}-open{{stroke-width:2; stroke:#{rgb:06x}; fill:none;}}"
             ));
 
             h = (h + GOLDEN_RATIO_CONJUGATE) % 1.0;
@@ -447,235 +475,218 @@ impl<'a> GanttChartTool<'a> {
         })
     }
 
-    fn render_chart(
-        &self,
-        add_resource_table: bool,
-        rd: &RenderData,
-    ) -> Result<String, Box<dyn Error>> {
-        let width: f32 = rd.gutter.left
-            + rd.title_width
-            + rd.cols.iter().map(|col| col.width).sum::<f32>()
-            + rd.gutter.right;
-        let height = rd.gutter.top
-            + (rd.rows.len() as f32 * rd.row_height)
-            + (if add_resource_table {
-                rd.resource_gutter.height() + rd.row_height
+    fn render_chart(&self, use_legend: bool, chart: &RenderData) -> Result<String, Box<dyn Error>> {
+        let width: f32 = chart.gutter.left
+            + chart.title_width
+            + chart.cols.iter().map(|col| col.width).sum::<f32>()
+            + chart.gutter.right;
+        let height = chart.gutter.top
+            + (chart.rows.len() as f32 * chart.row_height)
+            + (if use_legend {
+                chart.resource_gutter.height() + chart.row_height
             } else {
                 0.0
             })
-            + rd.gutter.bottom;
+            + chart.gutter.bottom;
 
-        let style = build::elem("style").append(build::from_iter(rd.styles.iter()));
+        let mut doc = Document::new()
+            .set("width", width)
+            .set("height", height)
+            .set("viewBox", (0, 0, width, height))
+            .set("style", "background-color: white;");
 
-        let svg = build::elem("svg").with(attrs!(
-            ("xmlns", "http://www.w3.org/2000/svg"),
-            ("width", width),
-            ("height", height),
-            ("viewBox", format_move!("0 0 {} {}", width, height)),
-            ("style", "background-color: white;")
-        ));
+        let mut style = Style::new("");
+        for s in chart.styles.iter() {
+            style.append(Blob::new(s));
+        }
 
-        // Render all the chart rows
-        let rows = build::elem("g").append(build::from_iter((0..=rd.rows.len()).map(|i| {
-            build::from_closure(move |w| {
-                let y = rd.gutter.top + (i as f32 * rd.row_height);
-                let line;
+        doc.append(style);
 
-                if i == 0 || i == rd.rows.len() {
-                    line = build::single("line").with(attrs!(
-                        ("class", "outer-lines"),
-                        ("x1", rd.gutter.left),
-                        ("y1", y),
-                        ("x2", width - rd.gutter.right),
-                        ("y2", y)
-                    ));
-                } else {
-                    line = build::single("line").with(attrs!(
-                        ("class", "inner-lines"),
-                        ("x1", rd.gutter.left),
-                        ("y1", y),
-                        ("x2", width - rd.gutter.right),
-                        ("y2", y)
-                    ));
-                }
+        // Render rows
+        let mut rows_g = Group::new();
+        let x1 = chart.gutter.left;
+        let x2 = width - chart.gutter.right;
+        for (i, row) in chart.rows.iter().enumerate() {
+            let y = chart.gutter.top + (i as f32 * chart.row_height);
+            let line_class = if i == 0 { "outer-lines" } else { "inner-lines" };
 
-                // Are we on one of the task rows?
-                if i < rd.rows.len() {
-                    let row: &RowRenderData = &rd.rows[i];
-                    let text = build::elem("text")
-                        .with(attrs!(
-                            ("class", "item"),
-                            ("x", rd.gutter.left + rd.row_gutter.left),
-                            ("y", y + rd.row_gutter.top + rd.row_height / 2.0)
-                        ))
-                        .append(format_move!("{}", &row.title));
+            rows_g.append(
+                Text::new(&row.title)
+                    .set("class", "item")
+                    .set("x", chart.gutter.left + chart.row_gutter.left)
+                    .set("y", y + chart.row_gutter.top + chart.row_height / 2.0),
+            );
 
-                    // Is this a task or a milestone?
-                    if let Some(length) = row.length {
-                        let bar = build::single("rect").with(attrs!(
-                            (
-                                "class",
-                                format_move!(
-                                    "resource-{}{}",
-                                    row.resource_index,
-                                    if row.open { "-open" } else { "-closed" }
-                                )
-                            ),
-                            ("x", row.offset),
-                            ("y", y + rd.row_gutter.top,),
-                            ("rx", rd.rect_corner_radius),
-                            ("ry", rd.rect_corner_radius),
-                            ("width", length),
-                            ("height", rd.row_height - rd.row_gutter.height())
-                        ));
-
-                        w.render(line.append(text).append(bar))
-                    } else {
-                        let n = (rd.row_height - rd.row_gutter.height()) / 2.0;
-
-                        let milestone = build::single("path").with(attrs!(
-                            ("class", "milestone"),
-                            build::path([
-                                M(row.offset - n, y + rd.row_gutter.top + n),
-                                L_(n, -n),
-                                L_(n, n),
-                                L_(-n, n),
-                                L_(-n, -n)
-                            ])
-                        ));
-
-                        w.render(line.append(text).append(milestone))
-                    }
-                } else {
-                    w.render(line)
-                }
-            })
-        })));
-
-        // Render all the charts columns
-        let columns = build::elem("g").append(build::from_iter((0..=rd.cols.len()).map(|i| {
-            build::from_closure(move |w| {
-                let x: f32 = rd.gutter.left
-                    + rd.title_width
-                    + rd.cols.iter().take(i).map(|col| col.width).sum::<f32>();
-                let line = build::single("line").with(attrs!(
-                    ("class", "inner-lines"),
-                    ("x1", x),
-                    ("y1", rd.gutter.top),
-                    ("x2", x),
-                    (
-                        "y2",
-                        rd.gutter.top + ((rd.rows.len() as f32) * rd.row_height)
-                    )
-                ));
-
-                if i < rd.cols.len() {
-                    let text = build::elem("text")
-                        .with(attrs!(
-                            ("class", "heading"),
-                            ("x", x + rd.max_month_width / 2.0),
-                            (
-                                "y",
-                                // TODO(john): Use a more appropriate row height value here?
-                                rd.gutter.top - rd.row_gutter.bottom - rd.row_height / 2.0
-                            )
-                        ))
-                        .append(format_move!("{}", &rd.cols[i].month_name));
-
-                    w.render(line.append(text))
-                } else {
-                    w.render(line)
-                }
-            })
-        })));
-
-        let tasks = build::elem("text")
-            .with(attrs!(
-                ("class", "heading task-heading"),
-                ("x", rd.gutter.left + rd.row_gutter.left),
-                // TODO(john): Use more appropriate row height value here?
-                (
-                    "y",
-                    rd.gutter.top - rd.row_gutter.bottom - rd.row_height / 2.0
-                )
-            ))
-            .append("Tasks");
-
-        let title = build::elem("text")
-            .with(attrs!(
-                ("class", "title"),
-                ("x", rd.gutter.left),
-                // TODO(john): Use more appropriate row height value here?
-                ("y", 25.0)
-            ))
-            .append(format_move!("{}", &rd.title));
-
-        let marked = build::from_closure(move |w| {
-            if let Some(offset) = rd.marked_date_offset {
-                let marker = build::single("line").with(attrs!(
-                    ("class", "marker"),
-                    ("x1", offset),
-                    ("y1", rd.gutter.top - 5.0),
-                    ("x2", offset),
-                    (
-                        "y2",
-                        rd.gutter.top + ((rd.rows.len() as f32) * rd.row_height) + 5.0
-                    )
-                ));
-
-                w.render(marker)
+            // Is this a task or a milestone?
+            if let Some(length) = row.length {
+                // task
+                let bar_class = format!(
+                    "resource-{}{}",
+                    row.resource_index,
+                    if row.open { "-open" } else { "-closed" }
+                );
+                rows_g.append(
+                    Rectangle::new()
+                        .set("class", bar_class)
+                        .set("x", row.offset)
+                        .set("y", y + chart.row_gutter.top)
+                        .set("rx", chart.rect_corner_radius)
+                        .set("ry", chart.rect_corner_radius)
+                        .set("width", length)
+                        .set("height", chart.row_height - chart.row_gutter.height()),
+                );
             } else {
-                w.render(build::single("g"))
+                // milestone
+                let n = (chart.row_height - chart.row_gutter.height()) / 2.0;
+                rows_g.append(
+                    Path::new().set(
+                        "d",
+                        Data::new()
+                            .move_to((row.offset - n, y + chart.row_gutter.top + n))
+                            .line_by((n, -n))
+                            .line_by((n, n))
+                            .line_by((-n, n))
+                            .line_by((-n, -n))
+                            .close(),
+                    ),
+                );
             }
-        });
 
-        let resources =
-            build::elem("g").append(build::from_iter((0..rd.resources.len()).map(|i| {
-                build::from_closure(move |w| {
-                    if add_resource_table {
-                        let y = rd.gutter.top + ((rd.rows.len() as f32) * rd.row_height);
-                        let block_width = rd.resource_height - rd.resource_gutter.height();
-                        let text = build::elem("text")
-                            .with(attrs!(
-                                ("class", "resource"),
-                                (
-                                    "x",
-                                    rd.resource_gutter.left + ((i + 1) as f32) * 100.0 - 5.0
-                                ),
-                                ("y", y + rd.resource_height / 2.0)
-                            ))
-                            .append(format_move!("{}", &rd.resources[i]));
-                        let block = build::single("rect").with(attrs!(
-                            ("class", format_move!("resource-{}-closed", i)),
-                            (
-                                "x",
-                                rd.resource_gutter.left + ((i + 1) as f32) * 100.0 + 5.0
-                            ),
-                            ("y", y + rd.resource_gutter.top),
-                            ("rx", rd.rect_corner_radius),
-                            ("ry", rd.rect_corner_radius),
-                            ("width", block_width),
-                            ("height", block_width)
-                        ));
-                        w.render(block.append(text))
-                    } else {
-                        w.render(build::single("g"))
-                    }
-                })
-            })));
+            rows_g.append(
+                Line::new()
+                    .set("class", line_class)
+                    .set("x1", x1)
+                    .set("y1", y)
+                    .set("x2", x2)
+                    .set("y2", y),
+            );
+        }
+        // last row
+        {
+            let y = chart.gutter.top + (chart.rows.len() as f32 * chart.row_height);
+            rows_g.append(
+                Line::new()
+                    .set("class", "outer-lines")
+                    .set("x1", x1)
+                    .set("y1", y)
+                    .set("x2", x2)
+                    .set("y2", y),
+            );
+        }
 
-        let all = svg
-            .append(style)
-            .append(title)
-            .append(columns)
-            .append(tasks)
-            .append(rows)
-            .append(marked)
-            .append(resources);
+        doc.append(rows_g);
 
-        let mut output = String::new();
-        hypermelon::render(all, &mut output)?;
+        // Render columns
+        let mut cols_g = Group::new();
+        let y2 = chart.gutter.top + ((chart.rows.len() as f32) * chart.row_height);
+        for (i, col) in chart.cols.iter().enumerate() {
+            let line_x = chart.gutter.left
+                + chart.title_width
+                + chart.cols.iter().take(i).map(|col| col.width).sum::<f32>();
+            let name_y = chart.gutter.top - chart.row_gutter.bottom - chart.row_height / 2.0;
 
-        Ok(output)
+            cols_g.append(
+                Text::new(&col.month_name)
+                    .set("class", "heading")
+                    .set("x", line_x + chart.max_month_width / 2.0)
+                    .set("y", name_y),
+            );
+
+            cols_g.append(
+                Line::new()
+                    .set("class", "inner-lines")
+                    .set("x1", line_x)
+                    .set("y1", chart.gutter.top)
+                    .set("x2", line_x)
+                    .set("y2", y2),
+            );
+        }
+        // last line
+        {
+            let x = chart.gutter.left + chart.title_width;
+            cols_g.append(
+                Line::new()
+                    .set("class", "inner-lines")
+                    .set("x1", x)
+                    .set("y1", chart.gutter.top)
+                    .set("x2", x)
+                    .set("y2", y2),
+            );
+        }
+
+        doc.append(cols_g);
+
+        // "Tasks" header
+        {
+            let x = chart.gutter.left + chart.row_gutter.left;
+            let y = chart.gutter.top - chart.row_gutter.bottom - chart.row_height / 2.0;
+            doc.append(
+                Text::new("Tasks")
+                    .set("class", "heading task-heading")
+                    .set("x", x)
+                    .set("y", y),
+            );
+        }
+
+        // Chart title
+        {
+            doc.append(
+                Text::new(&chart.title)
+                    .set("class", "title")
+                    .set("x", chart.gutter.left)
+                    .set("y", 25.0),
+            );
+        }
+
+        // Date marker
+        {
+            if let Some(offset) = chart.marked_date_offset {
+                let y1 = chart.gutter.top - 5.0;
+                let y2 = chart.gutter.top + ((chart.rows.len() as f32) * chart.row_height) + 5.0;
+                doc.append(
+                    Line::new()
+                        .set("class", "marker")
+                        .set("x1", offset)
+                        .set("y1", y1)
+                        .set("x2", offset)
+                        .set("y2", y2),
+                );
+            }
+        }
+
+        // Legend
+        if use_legend {
+            let mut legend_g = Group::new();
+            for (i, res) in chart.resources.iter().enumerate() {
+                let y = chart.gutter.top + ((chart.rows.len() as f32) * chart.row_height);
+                let block_width = chart.resource_height - chart.resource_gutter.height();
+
+                let res_x = chart.resource_gutter.left + ((i + 1) as f32) * 100.0 - 5.0;
+                let res_y = y + chart.resource_height / 2.0;
+                legend_g.append(
+                    Text::new(res)
+                        .set("class", "resource")
+                        .set("x", res_x)
+                        .set("y", res_y),
+                );
+
+                let rect_x = chart.resource_gutter.left + ((i + 1) as f32) * 100.0 + 5.0;
+                let rect_y = y + chart.resource_gutter.top;
+                legend_g.append(
+                    Rectangle::new()
+                        .set("class", format!("resource-{}-closed", i))
+                        .set("x", rect_x)
+                        .set("y", rect_y)
+                        .set("rx", chart.rect_corner_radius)
+                        .set("ry", chart.rect_corner_radius)
+                        .set("width", block_width)
+                        .set("height", block_width),
+                );
+            }
+
+            doc.append(legend_g);
+        }
+
+        Ok(doc.to_string())
     }
 }
